@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cryptolio AI - Risk Analyzer</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <section id="app-section" class="view">
+        <nav class="navbar">
+            <div class="brand">
+                <span class="brand-mark">C</span>
+                <span>Cryptolio AI</span>
+            </div>
+            <div class="nav-status">
+                <span class="status-dot"></span>
+                <span>Live</span>
+            </div>
+        </nav>
+
+        <main class="container">
+            <section class="search-container">
+                <div>
+                    <p class="eyebrow">Risk Console</p>
+                    <h1>Crypto Risk Dashboard</h1>
+                </div>
+                <div class="search-box">
+                    <input type="text" id="coin-input" placeholder="Masukan Koin.....">
+                    <button id="btn-analyze" class="btn-secondary">Analyze</button>
+                </div>
+
+            </section>
+
+            <div id="loader" class="hidden">
+                <div class="spinner"></div>
+                <p>Membaca market data dan menulis analisis...</p>
+            </div>
+
+            <section id="result-container" class="hidden">
+                <div class="dashboard-grid">
+                    <article class="card main-stats">
+                        <div class="coin-header">
+                            <img id="res-image" class="coin-image" src="" alt="">
+                            <div>
+                                <p class="label">Market Snapshot</p>
+                                <h2 id="res-name">Coin Name</h2>
+                            </div>
+                            <span id="res-rank" class="rank-pill">#-</span>
+                        </div>
+
+                        <div class="price-row">
+                            <span class="label">Harga</span>
+                            <span id="res-price" class="value">$0.00</span>
+                        </div>
+
+                        <div class="stats-row">
+                            <div class="metric">
+                                <span class="label">Market Cap</span>
+                                <span id="res-marketcap" class="value-sm">$0</span>
+                            </div>
+                            <div class="metric">
+                                <span class="label">Vol 24h</span>
+                                <span id="res-volume" class="value-sm">$0</span>
+                            </div>
+                            <div class="metric">
+                                <span class="label">24h Change</span>
+                                <span id="res-change" class="value-sm">0%</span>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="card risk-card">
+                        <span class="label">Risk Score</span>
+                        <div class="risk-circle">
+                            <span id="res-risk-score">0</span>
+                        </div>
+                        <div id="res-risk-level" class="risk-badge">Low</div>
+                    </article>
+
+                    <article class="card sentiment-card">
+                        <span class="label">Market Sentiment</span>
+                        <div id="res-sentiment" class="sentiment-value">Neutral</div>
+                        <div class="sentiment-line"></div>
+                    </article>
+
+                    <article class="card ai-explanation">
+                        <div class="analysis-head">
+                            <p class="label">AI Analysis</p>
+                        </div>
+                        <h2 id="analysis-headline">Analisis siap dibaca</h2>
+                        <p id="res-explanation" class="analysis-summary">Masukkan ID koin untuk melihat ringkasan risiko.</p>
+
+                        <div id="analysis-signals" class="signal-list"></div>
+
+                        <div class="watchlist">
+                            <p class="label">Watchlist</p>
+                            <ul id="analysis-watchlist"></ul>
+                        </div>
+
+                        <p id="analysis-verdict" class="analysis-verdict"></p>
+                    </article>
+
+                    <aside class="warning-box">
+                        <p><strong>Disclaimer:</strong> Bukan nasihat keuangan. Lakukan riset mandiri sebelum mengambil keputusan.</p>
+                    </aside>
+                </div>
+            </section>
+        </main>
+    </section>
+
+    <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+node_modules
+.env
+secret.env
+server-test*.log
+server.*.log
