@@ -1,168 +1,131 @@
+import { fetchAnalysis } from './js/api.js';
+import { renderCompareResults } from './js/compare.js';
+import { createSearchHistory } from './js/history.js';
+import { createNotificationController } from './js/notifications.js';
+import { displayResult } from './js/singleResult.js';
+
 const btnAnalyze = document.getElementById('btn-analyze');
+const btnCompare = document.getElementById('btn-compare');
+const btnClearHistory = document.getElementById('btn-clear-history');
 const coinInput = document.getElementById('coin-input');
 const loader = document.getElementById('loader');
+const notification = document.getElementById('notification');
 const resultContainer = document.getElementById('result-container');
+const compareContainer = document.getElementById('compare-container');
+const compareGrid = document.getElementById('compare-grid');
+const compareCount = document.getElementById('compare-count');
+const historyPanel = document.getElementById('history-panel');
+const historyList = document.getElementById('history-list');
 const coinImage = document.getElementById('res-image');
 const analysisSignals = document.getElementById('analysis-signals');
 const analysisWatchlist = document.getElementById('analysis-watchlist');
 
-const usdFormatter = new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 2
-});
-
-const compactUsdFormatter = new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    notation: 'compact',
-    maximumFractionDigits: 2
+const notifications = createNotificationController(notification);
+const searchHistory = createSearchHistory({
+    historyPanel,
+    historyList,
+    coinInput,
+    onSelect: analyzeSingleCoin
 });
 
 coinInput.focus();
+searchHistory.renderSearchHistory();
 
 coinInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') btnAnalyze.click();
 });
 
 btnAnalyze.addEventListener('click', async () => {
-    const coinId = coinInput.value.toLowerCase().trim();
+    const coinIds = parseCoinInput();
 
-    if (!coinId) {
-        alert('Silakan masukkan ID koin (contoh: bitcoin, ethereum, cardano)');
+    if (coinIds.length === 0) {
+        notifications.showNotification('Silakan masukkan ID koin. Contoh: bitcoin, ethereum, cardano.');
+        coinInput.focus();
         return;
     }
 
-    resultContainer.classList.add('hidden');
-    loader.classList.remove('hidden');
-    btnAnalyze.disabled = true;
-    btnAnalyze.innerText = 'Analyzing...';
-
-    try {
-        const response = await fetch('/api/analyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ coinId })
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            throw new Error(data.error || 'Terjadi kesalahan sistem');
-        }
-
-        displayResult(data);
-    } catch (error) {
-        alert(`Error: ${error.message}`);
-    } finally {
-        loader.classList.add('hidden');
-        btnAnalyze.disabled = false;
-        btnAnalyze.innerText = 'Analyze';
-    }
+    await analyzeSingleCoin(coinIds[0]);
 });
 
-function displayResult(data) {
-    setText('res-name', `${data.name} (${data.symbol})`);
-    setText('res-price', usdFormatter.format(data.price || 0));
-    setText('res-marketcap', compactUsdFormatter.format(data.marketCap || 0));
-    setText('res-volume', compactUsdFormatter.format(data.volume || 0));
-    setText('res-change', `${Number(data.change24h || 0).toFixed(2)}%`);
-    setText('res-risk-score', data.riskScore);
-    setText('res-risk-level', data.riskLevel);
-    setText('res-sentiment', data.sentiment);
-    setText('analysis-headline', data.analysis?.headline || 'Analisis siap dibaca');
-    setText('res-explanation', getAnalysisText(data));
-    setText('analysis-verdict', data.analysis?.verdict || '');
-    setText('res-rank', data.rank ? `#${data.rank}` : '#-');
+btnCompare.addEventListener('click', async () => {
+    const coinIds = parseCoinInput();
 
-    if (coinImage) {
-        coinImage.src = data.image || '';
-        coinImage.alt = data.name ? `${data.name} logo` : '';
-        coinImage.classList.toggle('hidden', !data.image);
+    if (coinIds.length < 2) {
+        notifications.showNotification('Masukkan 2-3 koin dipisahkan koma. Contoh: bitcoin, ethereum, solana.');
+        coinInput.focus();
+        return;
     }
 
-    renderSignals(data.analysis?.signals || []);
-    renderWatchlist(data.analysis?.watchlist || []);
-
-    const riskBadge = document.getElementById('res-risk-level');
-    const riskCircle = document.querySelector('.risk-circle');
-    const changeEl = document.getElementById('res-change');
-    const sentEl = document.getElementById('res-sentiment');
-    const color = getRiskColor(data.riskScore);
-
-    if (riskBadge) riskBadge.style.backgroundColor = color;
-    if (riskCircle) riskCircle.style.borderColor = color;
-    if (changeEl) changeEl.style.color = Number(data.change24h || 0) >= 0 ? '#10b981' : '#ef4444';
-
-    if (sentEl) {
-        if (data.sentiment === 'Bullish') sentEl.style.color = '#10b981';
-        else if (data.sentiment === 'Bearish') sentEl.style.color = '#ef4444';
-        else sentEl.style.color = '#94a3b8';
+    if (coinIds.length > 3) {
+        notifications.showNotification('Compare maksimal 3 koin agar hasil tetap mudah dibaca.');
+        coinInput.focus();
+        return;
     }
 
-    resultContainer.classList.remove('hidden');
-}
+    await compareCoins(coinIds);
+});
 
-function setText(id, value) {
-    const element = document.getElementById(id);
-    if (element) element.innerText = value;
-}
+btnClearHistory.addEventListener('click', () => {
+    searchHistory.clearSearchHistory();
+});
 
-function renderSignals(signals) {
-    if (!analysisSignals) return;
+async function analyzeSingleCoin(coinId) {
+    resultContainer.classList.add('hidden');
+    compareContainer.classList.add('hidden');
+    notifications.hideNotification();
+    setLoading(true, 'Analyzing...');
 
-    analysisSignals.innerHTML = '';
+    try {
+        const data = await fetchAnalysis(coinId, true);
 
-    signals.forEach((signal) => {
-        const item = document.createElement('div');
-        item.className = `signal-item ${signal.tone || 'neutral'}`;
-
-        const label = document.createElement('span');
-        label.className = 'signal-label';
-        label.innerText = signal.label || 'Signal';
-
-        const text = document.createElement('p');
-        text.innerText = signal.text || '';
-
-        item.append(label, text);
-        analysisSignals.appendChild(item);
-    });
-}
-
-function renderWatchlist(items) {
-    if (!analysisWatchlist) return;
-
-    analysisWatchlist.innerHTML = '';
-
-    items.forEach((itemText) => {
-        const item = document.createElement('li');
-        item.innerText = itemText;
-        analysisWatchlist.appendChild(item);
-    });
-}
-
-function getAnalysisText(data) {
-    if (data.analysis?.summary) return stripTrailingDisclaimer(data.analysis.summary);
-
-    if (data.explanation) return stripTrailingDisclaimer(data.explanation);
-
-    if (data.analysis) {
-        return stripTrailingDisclaimer([data.analysis.summary, data.analysis.verdict].filter(Boolean).join(' '));
+        displayResult(data, {
+            resultContainer,
+            coinImage,
+            analysisSignals,
+            analysisWatchlist
+        });
+        searchHistory.saveSearchHistory([data.id || coinId]);
+    } catch (error) {
+        notifications.showNotification(error.message);
+    } finally {
+        setLoading(false);
     }
-
-    return 'Analisis belum tersedia, tetapi data pasar berhasil dimuat. Bukan financial advice.';
 }
 
-function stripTrailingDisclaimer(text) {
-    return String(text || '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .replace(/[\s,.;:-]*bukan financial advice\.?$/i, '')
-        .trim();
+async function compareCoins(coinIds) {
+    resultContainer.classList.add('hidden');
+    compareContainer.classList.add('hidden');
+    notifications.hideNotification();
+    setLoading(true, 'Comparing...');
+
+    try {
+        const results = await Promise.all(coinIds.map((coinId) => fetchAnalysis(coinId, false)));
+
+        renderCompareResults(results, {
+            compareGrid,
+            compareCount,
+            compareContainer
+        });
+        searchHistory.saveSearchHistory(results.map((coin) => coin.id).filter(Boolean));
+    } catch (error) {
+        notifications.showNotification(error.message);
+    } finally {
+        setLoading(false);
+    }
 }
 
-function getRiskColor(score) {
-    if (score <= 35) return '#10b981';
-    if (score <= 70) return '#f59e0b';
-    return '#ef4444';
+function parseCoinInput() {
+    return coinInput.value
+        .split(/[,;\n]+/)
+        .map((coinId) => coinId.trim().toLowerCase())
+        .filter(Boolean)
+        .filter((coinId, index, coinIds) => coinIds.indexOf(coinId) === index);
+}
+
+function setLoading(isLoading, label = 'Analyze') {
+    loader.classList.toggle('hidden', !isLoading);
+    btnAnalyze.disabled = isLoading;
+    btnCompare.disabled = isLoading;
+    btnAnalyze.innerText = isLoading ? label : 'Analyze';
+    btnCompare.innerText = isLoading ? 'Wait...' : 'Compare';
 }

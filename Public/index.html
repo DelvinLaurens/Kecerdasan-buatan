@@ -21,22 +21,43 @@
         </nav>
 
         <main class="container">
+            <div id="notification" class="notification hidden" role="status" aria-live="polite"></div>
+
             <section class="search-container">
                 <div>
                     <p class="eyebrow">Risk Console</p>
                     <h1>Crypto Risk Dashboard</h1>
                 </div>
                 <div class="search-box">
-                    <input type="text" id="coin-input" placeholder="Masukan Koin.....">
+                    <input type="text" id="coin-input" placeholder="Search......">
                     <button id="btn-analyze" class="btn-secondary">Analyze</button>
+                    <button id="btn-compare" class="btn-outline">Compare</button>
                 </div>
 
+                <div id="history-panel" class="history-panel hidden">
+                    <div class="history-top">
+                        <span class="label">Search History</span>
+                        <button id="btn-clear-history" class="btn-link">Clear</button>
+                    </div>
+                    <div id="history-list" class="history-list"></div>
+                </div>
             </section>
 
             <div id="loader" class="hidden">
                 <div class="spinner"></div>
                 <p>Membaca market data dan menulis analisis...</p>
             </div>
+
+            <section id="compare-container" class="hidden">
+                <div class="section-head">
+                    <div>
+                        <p class="label">Compare</p>
+                        <h2>Perbandingan Koin</h2>
+                    </div>
+                    <span id="compare-count" class="rank-pill">0 coin</span>
+                </div>
+                <div id="compare-grid" class="compare-grid"></div>
+            </section>
 
             <section id="result-container" class="hidden">
                 <div class="dashboard-grid">
@@ -67,6 +88,21 @@
                             <div class="metric">
                                 <span class="label">24h Change</span>
                                 <span id="res-change" class="value-sm">0%</span>
+                            </div>
+                        </div>
+
+                        <div class="advanced-row">
+                            <div class="metric">
+                                <span class="label">ATH Distance</span>
+                                <span id="res-ath-distance" class="value-sm">-</span>
+                            </div>
+                            <div class="metric">
+                                <span class="label">Dominance</span>
+                                <span id="res-dominance" class="value-sm">-</span>
+                            </div>
+                            <div class="metric">
+                                <span class="label">Volume Signal</span>
+                                <span id="res-volume-signal" class="value-sm">-</span>
                             </div>
                         </div>
                     </article>
@@ -110,6 +146,6 @@
         </main>
     </section>
 
-    <script src="script.js"></script>
+    <script type="module" src="script.js"></script>
 </body>
 </html>

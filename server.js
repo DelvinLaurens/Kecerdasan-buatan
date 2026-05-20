@@ -11,6 +11,13 @@ dotenv.config({ path: ENV_PATH });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const GLOBAL_MARKET_CACHE_TTL_MS = 60 * 1000;
+const ANALYZE_CACHE_TTL_MS = 60 * 1000;
+let globalMarketCache = {
+    totalMarketCapUsd: 0,
+    expiresAt: 0
+};
+const analyzeResultCache = new Map();
 
 app.use(cors());
 app.use(express.json());
@@ -62,7 +69,11 @@ function getLlmConfig() {
     };
 }
 
-function buildAnalysisPrompt({ coin, riskScore, riskLevel, reasons, change24h, rank, liquidity, sentiment, marketCap, volume }) {
+function buildAnalysisPrompt({ coin, riskScore, riskLevel, reasons, change24h, rank, liquidity, sentiment, marketCap, volume, athDistance, dominance, volumeSpikeRatio, volumeSignal }) {
+    const athDistanceText = hasNumericValue(athDistance) ? `${Number(athDistance).toFixed(2)}% di bawah ATH` : 'tidak tersedia';
+    const dominanceText = hasNumericValue(dominance) ? `${Number(dominance).toFixed(4)}%` : 'tidak tersedia';
+    const volumeSpikeText = hasNumericValue(volumeSpikeRatio) ? `${Number(volumeSpikeRatio).toFixed(2)}x rata-rata 7 hari` : 'tidak tersedia';
+
     return [
         'Kamu menulis analisis risiko crypto untuk aplikasi edukasi bernama Cryptolio AI.',
         'Gaya bahasa: natural, tajam, dan spesifik seperti analis pasar yang menjelaskan ke pemula cerdas.',
@@ -71,7 +82,7 @@ function buildAnalysisPrompt({ coin, riskScore, riskLevel, reasons, change24h, r
         'Jangan memberi instruksi beli, jual, entry, exit, take profit, atau stop loss.',
         'Balas hanya JSON valid tanpa markdown, tanpa komentar, dan tanpa teks tambahan.',
         'Schema JSON:',
-        '{"headline":"maksimal 9 kata","summary":"2 kalimat yang spesifik ke angka koin ini","signals":[{"label":"Volatilitas","tone":"positive|neutral|warning|danger","text":"1 kalimat pendek"},{"label":"Ukuran pasar","tone":"positive|neutral|warning|danger","text":"1 kalimat pendek"},{"label":"Likuiditas","tone":"positive|neutral|warning|danger","text":"1 kalimat pendek"}],"watchlist":["hal yang perlu dipantau 1","hal yang perlu dipantau 2"],"verdict":"1 kalimat penutup yang diakhiri persis dengan: Bukan financial advice."}',
+        '{"headline":"maksimal 9 kata","summary":"2 kalimat yang spesifik ke angka koin ini","signals":[{"label":"Volatilitas","tone":"positive|neutral|warning|danger","text":"1 kalimat pendek"},{"label":"Ukuran pasar","tone":"positive|neutral|warning|danger","text":"1 kalimat pendek"},{"label":"Likuiditas","tone":"positive|neutral|warning|danger","text":"1 kalimat pendek"},{"label":"ATH distance","tone":"positive|neutral|warning|danger","text":"1 kalimat pendek"},{"label":"Volume spike","tone":"positive|neutral|warning|danger","text":"1 kalimat pendek"},{"label":"Dominance","tone":"positive|neutral|warning|danger","text":"1 kalimat pendek"}],"watchlist":["hal yang perlu dipantau 1","hal yang perlu dipantau 2"],"verdict":"1 kalimat penutup yang diakhiri persis dengan: Bukan financial advice."}',
         '',
         `Koin: ${coin.name} (${coin.symbol.toUpperCase()})`,
         `Harga saat ini: $${coin.current_price}`,
@@ -80,6 +91,10 @@ function buildAnalysisPrompt({ coin, riskScore, riskLevel, reasons, change24h, r
         `Market cap rank: ${rank || 'tidak tersedia'}`,
         `Perubahan 24 jam: ${change24h.toFixed(2)}%`,
         `Likuiditas volume/market cap: ${liquidity.toFixed(4)}`,
+        `ATH distance: ${athDistanceText}`,
+        `Dominance terhadap total market crypto: ${dominanceText}`,
+        `Volume spike ratio: ${volumeSpikeText}`,
+        `Volume signal: ${volumeSignal || 'tidak tersedia'}`,
         `Skor risiko algoritma: ${riskScore}/100`,
         `Level risiko: ${riskLevel}`,
         `Sentimen pasar: ${sentiment}`,
@@ -269,13 +284,66 @@ function getLiquidityTone(liquidity) {
     return 'danger';
 }
 
-function buildFallbackAnalysis({ coin, riskScore, riskLevel, reasons, change24h, rank, liquidity }) {
+function hasNumericValue(value) {
+    return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+}
+
+function getAthTone(athDistance) {
+    if (!hasNumericValue(athDistance)) return 'warning';
+    if (athDistance <= 30) return 'positive';
+    if (athDistance <= 55) return 'neutral';
+    if (athDistance <= 80) return 'warning';
+    return 'danger';
+}
+
+function getDominanceTone(dominance) {
+    if (!hasNumericValue(dominance)) return 'warning';
+    if (dominance >= 0.2) return 'positive';
+    if (dominance >= 0.05) return 'neutral';
+    if (dominance >= 0.005) return 'warning';
+    return 'danger';
+}
+
+function getVolumeSpikeTone(volumeSpikeRatio, liquidity) {
+    if (hasNumericValue(volumeSpikeRatio)) {
+        if (volumeSpikeRatio >= 3 || volumeSpikeRatio <= 0.35) return 'warning';
+        if (volumeSpikeRatio >= 2) return 'neutral';
+        return 'positive';
+    }
+
+    return getLiquidityTone(liquidity);
+}
+
+function getVolumeSignal(volumeSpikeRatio, liquidity) {
+    if (hasNumericValue(volumeSpikeRatio)) {
+        if (volumeSpikeRatio >= 3) return 'Spike tinggi';
+        if (volumeSpikeRatio >= 2) return 'Volume naik';
+        if (volumeSpikeRatio <= 0.35) return 'Volume tipis';
+        return 'Normal';
+    }
+
+    if (liquidity < 0.001) return 'Volume tipis';
+    return 'Data terbatas';
+}
+
+function formatOptionalPercent(value, fallback = 'tidak tersedia') {
+    return hasNumericValue(value) ? `${Number(value).toFixed(2)}%` : fallback;
+}
+
+function formatOptionalRatio(value, fallback = 'tidak tersedia') {
+    return hasNumericValue(value) ? `${Number(value).toFixed(2)}x` : fallback;
+}
+
+function buildFallbackAnalysis({ coin, riskScore, riskLevel, reasons, change24h, rank, liquidity, athDistance, dominance, volumeSpikeRatio, volumeSignal }) {
     const rankText = rank ? `rank #${rank}` : 'rank pasar belum tersedia';
     const directionText = change24h >= 0 ? 'menguat' : 'melemah';
+    const athText = hasNumericValue(athDistance) ? `${Number(athDistance).toFixed(2)}% di bawah ATH` : 'ATH distance belum tersedia';
+    const dominanceText = hasNumericValue(dominance) ? `${Number(dominance).toFixed(4)}% dominance` : 'dominance belum tersedia';
+    const volumeSpikeText = hasNumericValue(volumeSpikeRatio) ? `${Number(volumeSpikeRatio).toFixed(2)}x rata-rata 7 hari` : volumeSignal;
 
     return {
         headline: `${coin.name} terlihat ${riskLevel.split(' ')[0].toLowerCase()}`,
-        summary: `${coin.name} bergerak ${directionText} ${Math.abs(change24h).toFixed(2)}% dalam 24 jam, dengan ${rankText} dan skor risiko ${riskScore}/100. Faktor yang paling terasa adalah ${reasons.join(', ').toLowerCase()}, jadi pembacaan risikonya masih perlu dibandingkan dengan kondisi pasar terbaru.`,
+        summary: `${coin.name} bergerak ${directionText} ${Math.abs(change24h).toFixed(2)}% dalam 24 jam, dengan ${rankText} dan skor risiko ${riskScore}/100. Faktor tambahan seperti ${athText}, ${volumeSpikeText}, dan ${dominanceText} membuat pembacaan risikonya lebih lengkap.`,
         signals: [
             {
                 label: 'Volatilitas',
@@ -291,21 +359,44 @@ function buildFallbackAnalysis({ coin, riskScore, riskLevel, reasons, change24h,
                 label: 'Likuiditas',
                 tone: getLiquidityTone(liquidity),
                 text: `Rasio volume terhadap market cap berada di ${liquidity.toFixed(4)}, yang memberi gambaran seberapa ramai transaksinya.`
+            },
+            {
+                label: 'ATH distance',
+                tone: getAthTone(athDistance),
+                text: hasNumericValue(athDistance) ? `Harga saat ini berada ${Number(athDistance).toFixed(2)}% di bawah all-time high.` : 'Data all-time high belum tersedia untuk koin ini.'
+            },
+            {
+                label: 'Volume spike',
+                tone: getVolumeSpikeTone(volumeSpikeRatio, liquidity),
+                text: hasNumericValue(volumeSpikeRatio) ? `Volume 24 jam berada di ${Number(volumeSpikeRatio).toFixed(2)}x rata-rata 7 hari terakhir.` : `Sinyal volume saat ini terbaca sebagai ${volumeSignal}.`
+            },
+            {
+                label: 'Dominance',
+                tone: getDominanceTone(dominance),
+                text: hasNumericValue(dominance) ? `Dominance market cap koin ini sekitar ${Number(dominance).toFixed(4)}% dari total market crypto.` : 'Dominance belum bisa dihitung karena data global tidak tersedia.'
             }
         ],
         watchlist: [
-            'Pantau apakah perubahan 24 jam melebar di atas 7%.',
-            'Bandingkan volume harian dengan market cap sebelum menyimpulkan kekuatan tren.'
+            'Pantau apakah perubahan 24 jam melebar di atas 7% dan volume ikut melonjak.',
+            'Bandingkan jarak dari ATH, dominance, dan volume sebelum menyimpulkan kekuatan tren.'
         ],
         verdict: ensureDisclaimer(`Untuk pemula, ${coin.name} lebih cocok dibaca sebagai bahan observasi risiko daripada sinyal keputusan instan.`)
     };
+}
+
+function parseJsonAllowingTrailingCommas(text) {
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        return JSON.parse(String(text).replace(/,\s*([}\]])/g, '$1'));
+    }
 }
 
 function extractJsonObject(text) {
     const cleanText = String(text || '').trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
 
     try {
-        return JSON.parse(cleanText);
+        return parseJsonAllowingTrailingCommas(cleanText);
     } catch (error) {
         const start = cleanText.indexOf('{');
         const end = cleanText.lastIndexOf('}');
@@ -314,7 +405,7 @@ function extractJsonObject(text) {
             throw error;
         }
 
-        return JSON.parse(cleanText.slice(start, end + 1));
+        return parseJsonAllowingTrailingCommas(cleanText.slice(start, end + 1));
     }
 }
 
@@ -469,6 +560,183 @@ async function fetchCoinMarket(coinId) {
     return orderedMarketData.slice(0, 1);
 }
 
+async function fetchGlobalMarketCapUsd() {
+    const now = Date.now();
+
+    if (globalMarketCache.totalMarketCapUsd && globalMarketCache.expiresAt > now) {
+        return globalMarketCache.totalMarketCapUsd;
+    }
+
+    try {
+        const response = await axios.get(`${COINGECKO_BASE_URL}/global`, {
+            params: getCoinGeckoParams({}),
+            headers: getCoinGeckoHeaders(),
+            timeout: 30000
+        });
+        const totalMarketCapUsd = Number(response.data?.data?.total_market_cap?.usd) || 0;
+
+        globalMarketCache = {
+            totalMarketCapUsd,
+            expiresAt: now + GLOBAL_MARKET_CACHE_TTL_MS
+        };
+
+        return totalMarketCapUsd;
+    } catch (error) {
+        console.log(`Warning: Gagal mengambil global market cap. Detail: ${getAxiosErrorMessage(error)}`);
+        return globalMarketCache.totalMarketCapUsd || 0;
+    }
+}
+
+async function fetchVolumeSpikeRatio(coinId, currentVolume) {
+    try {
+        const response = await axios.get(`${COINGECKO_BASE_URL}/coins/${encodeURIComponent(coinId)}/market_chart`, {
+            params: getCoinGeckoParams({
+                vs_currency: 'usd',
+                days: 14,
+                interval: 'daily'
+            }),
+            headers: getCoinGeckoHeaders(),
+            timeout: 30000
+        });
+        const volumes = Array.isArray(response.data?.total_volumes) ? response.data.total_volumes : [];
+        const historicalVolumes = volumes
+            .map((item) => Number(item?.[1]))
+            .filter((value) => Number.isFinite(value) && value > 0);
+        const previousVolumes = historicalVolumes.slice(0, -1).slice(-7);
+
+        if (previousVolumes.length < 3) {
+            return null;
+        }
+
+        const averageVolume = previousVolumes.reduce((total, value) => total + value, 0) / previousVolumes.length;
+
+        if (!averageVolume) {
+            return null;
+        }
+
+        return currentVolume / averageVolume;
+    } catch (error) {
+        console.log(`Warning: Gagal mengambil volume history ${coinId}. Detail: ${getAxiosErrorMessage(error)}`);
+        return null;
+    }
+}
+
+function getAthDistance(athChangePercentage) {
+    const athChange = Number(athChangePercentage);
+
+    if (!Number.isFinite(athChange)) {
+        return null;
+    }
+
+    return Math.max(0, Math.abs(Math.min(athChange, 0)));
+}
+
+function buildRiskAssessment({ marketCap, volume, change24h, rank, liquidity, athDistance, dominance, volumeSpikeRatio }) {
+    const volatility = Math.abs(change24h);
+    const volumeSignal = getVolumeSignal(volumeSpikeRatio, liquidity);
+    const reasons = [];
+    let riskScore = 0;
+
+    if (volatility > 15) {
+        riskScore += 25;
+        reasons.push('Volatilitas sangat tinggi');
+    } else if (volatility > 7) {
+        riskScore += 15;
+        reasons.push('Volatilitas sedang');
+    } else {
+        riskScore += 5;
+        reasons.push('Harga relatif stabil');
+    }
+
+    if (!rank) {
+        riskScore += 25;
+        reasons.push('Market cap rank belum tersedia');
+    } else if (rank > 200) {
+        riskScore += 28;
+        reasons.push('Koin kecil atau baru');
+    } else if (rank > 50) {
+        riskScore += 16;
+        reasons.push('Koin menengah');
+    } else {
+        riskScore += 5;
+        reasons.push('Koin besar');
+    }
+
+    if (liquidity < 0.001) {
+        riskScore += 15;
+        reasons.push('Likuiditas rendah');
+    } else if (liquidity < 0.005) {
+        riskScore += 8;
+        reasons.push('Likuiditas perlu dipantau');
+    } else {
+        reasons.push('Likuiditas cukup aktif');
+    }
+
+    if (!hasNumericValue(athDistance)) {
+        riskScore += 4;
+        reasons.push('ATH distance belum tersedia');
+    } else if (athDistance > 80) {
+        riskScore += 20;
+        reasons.push('Jauh dari ATH');
+    } else if (athDistance > 55) {
+        riskScore += 14;
+        reasons.push('Masih jauh dari ATH');
+    } else if (athDistance > 30) {
+        riskScore += 8;
+        reasons.push('Drawdown dari ATH sedang');
+    } else {
+        riskScore += 2;
+        reasons.push('Dekat dengan ATH');
+    }
+
+    if (!hasNumericValue(dominance)) {
+        riskScore += 4;
+        reasons.push('Dominance belum tersedia');
+    } else if (dominance < 0.005) {
+        riskScore += 12;
+        reasons.push('Dominance sangat kecil');
+    } else if (dominance < 0.05) {
+        riskScore += 8;
+        reasons.push('Dominance kecil');
+    } else if (dominance < 0.2) {
+        riskScore += 4;
+        reasons.push('Dominance menengah');
+    } else {
+        reasons.push('Dominance kuat');
+    }
+
+    if (hasNumericValue(volumeSpikeRatio)) {
+        if (volumeSpikeRatio >= 3) {
+            riskScore += 12;
+            reasons.push('Volume spike anomali');
+        } else if (volumeSpikeRatio >= 2) {
+            riskScore += 8;
+            reasons.push('Volume naik tajam');
+        } else if (volumeSpikeRatio <= 0.35) {
+            riskScore += 8;
+            reasons.push('Volume jauh di bawah rata-rata');
+        } else {
+            reasons.push('Volume normal');
+        }
+    }
+
+    return {
+        riskScore: Math.min(Math.round(riskScore), 100),
+        reasons,
+        riskFactors: {
+            volatility,
+            rank,
+            liquidity,
+            athDistance,
+            dominance,
+            volumeSpikeRatio,
+            volumeSignal,
+            marketCap,
+            volume
+        }
+    };
+}
+
 function getAxiosErrorMessage(error) {
     if (error.response?.data) {
         return JSON.stringify(error.response.data);
@@ -481,6 +749,50 @@ function getAxiosErrorMessage(error) {
     return error.message || 'Unknown error';
 }
 
+function getAnalyzeCacheKey(coinId, shouldGenerateAi) {
+    return `${shouldGenerateAi ? 'ai' : 'market'}:${coinId}`;
+}
+
+function cloneJson(value) {
+    return JSON.parse(JSON.stringify(value));
+}
+
+function getCachedAnalyzeResult(cacheKey) {
+    const entry = analyzeResultCache.get(cacheKey);
+
+    if (!entry) return null;
+
+    const now = Date.now();
+
+    if (entry.expiresAt <= now) {
+        analyzeResultCache.delete(cacheKey);
+        return null;
+    }
+
+    return {
+        ...cloneJson(entry.result),
+        cache: {
+            hit: true,
+            ttlSeconds: Math.ceil((entry.expiresAt - now) / 1000)
+        }
+    };
+}
+
+function setCachedAnalyzeResult(cacheKey, result) {
+    const now = Date.now();
+
+    for (const [key, entry] of analyzeResultCache.entries()) {
+        if (entry.expiresAt <= now) {
+            analyzeResultCache.delete(key);
+        }
+    }
+
+    analyzeResultCache.set(cacheKey, {
+        result: cloneJson(result),
+        expiresAt: now + ANALYZE_CACHE_TTL_MS
+    });
+}
+
 app.get('/api/health', (req, res) => {
     const llm = getLlmConfig();
 
@@ -490,15 +802,25 @@ app.get('/api/health', (req, res) => {
         llmModel: llm.model,
         llmHasKey: Boolean(llm.apiKey),
         llmModels: llm.models || (llm.model ? [llm.model] : []),
-        coinGeckoHasKey: Boolean(COINGECKO_API_KEY)
+        coinGeckoHasKey: Boolean(COINGECKO_API_KEY),
+        analyzeCacheSize: analyzeResultCache.size
     });
 });
 
 app.post('/api/analyze', async (req, res) => {
     const normalizedCoinId = String(req.body?.coinId || '').trim().toLowerCase();
+    const shouldGenerateAi = req.body?.includeAi !== false;
 
     if (!normalizedCoinId) {
         return res.status(400).json({ error: 'ID koin wajib diisi.' });
+    }
+
+    const cacheKey = getAnalyzeCacheKey(normalizedCoinId, shouldGenerateAi);
+    const cachedResult = getCachedAnalyzeResult(cacheKey);
+
+    if (cachedResult) {
+        console.log(`\n--- Cache hit untuk: ${normalizedCoinId} (${shouldGenerateAi ? 'ai' : 'market'}) ---`);
+        return res.json(cachedResult);
     }
 
     console.log(`\n--- Menjalankan algoritma penilai untuk: ${normalizedCoinId} ---`);
@@ -514,52 +836,33 @@ app.post('/api/analyze', async (req, res) => {
         const marketCap = coin.market_cap || 0;
         const volume = coin.total_volume || 0;
         const change24h = coin.price_change_percentage_24h || 0;
-        const volatility = Math.abs(change24h);
         const rank = coin.market_cap_rank;
         const liquidity = marketCap > 0 ? volume / marketCap : 0;
-
-        let riskScore = 0;
-        const reasons = [];
-
-        if (volatility > 15) {
-            riskScore += 40;
-            reasons.push('Volatilitas sangat tinggi');
-        } else if (volatility > 7) {
-            riskScore += 20;
-            reasons.push('Volatilitas sedang');
-        } else {
-            riskScore += 5;
-            reasons.push('Harga relatif stabil');
-        }
-
-        if (!rank) {
-            riskScore += 30;
-            reasons.push('Market cap rank belum tersedia');
-        } else if (rank > 200) {
-            riskScore += 40;
-            reasons.push('Koin kecil atau baru');
-        } else if (rank > 50) {
-            riskScore += 20;
-            reasons.push('Koin menengah');
-        } else {
-            riskScore += 5;
-            reasons.push('Koin besar');
-        }
-
-        if (liquidity < 0.001) {
-            riskScore += 20;
-            reasons.push('Likuiditas rendah');
-        }
-
-        riskScore = Math.min(riskScore, 100);
+        const [totalMarketCapUsd, volumeSpikeRatio] = await Promise.all([
+            fetchGlobalMarketCapUsd(),
+            fetchVolumeSpikeRatio(coin.id, volume)
+        ]);
+        const athDistance = getAthDistance(coin.ath_change_percentage);
+        const dominance = totalMarketCapUsd > 0 && marketCap > 0 ? (marketCap / totalMarketCapUsd) * 100 : null;
+        const { riskScore, reasons, riskFactors } = buildRiskAssessment({
+            marketCap,
+            volume,
+            change24h,
+            rank,
+            liquidity,
+            athDistance,
+            dominance,
+            volumeSpikeRatio
+        });
 
         const riskLevel = riskScore > 70 ? 'Tinggi (Bahaya)' : riskScore > 35 ? 'Sedang (Waspada)' : 'Rendah (Aman)';
         const sentiment = getMarketSentiment(change24h, riskScore);
+        const llmConfig = getLlmConfig();
 
         let llm = {
             connected: false,
-            provider: getLlmConfig().provider,
-            model: getLlmConfig().model,
+            provider: shouldGenerateAi ? llmConfig.provider : 'skipped',
+            model: shouldGenerateAi ? llmConfig.model : '',
             error: ''
         };
         const analysisContext = {
@@ -572,28 +875,35 @@ app.post('/api/analyze', async (req, res) => {
             liquidity,
             sentiment,
             marketCap,
-            volume
+            volume,
+            athDistance,
+            dominance,
+            volumeSpikeRatio,
+            volumeSignal: riskFactors.volumeSignal
         };
         let analysis = buildFallbackAnalysis(analysisContext);
         let explanation = buildExplanationFromAnalysis(analysis);
 
-        try {
-            const prompt = buildAnalysisPrompt(analysisContext);
-            const aiResult = await generateExplanation(prompt);
-            const rawAnalysis = extractJsonObject(aiResult.text);
+        if (shouldGenerateAi) {
+            try {
+                const prompt = buildAnalysisPrompt(analysisContext);
+                const aiResult = await generateExplanation(prompt);
+                const rawAnalysis = extractJsonObject(aiResult.text);
 
-            llm = aiResult;
-            analysis = normalizeAnalysis(rawAnalysis, analysis);
-            explanation = buildExplanationFromAnalysis(analysis);
-            console.log(`OK: LLM ${aiResult.provider}/${aiResult.model} berhasil generate.`);
-        } catch (aiError) {
-            llm.error = getAxiosErrorMessage(aiError);
-            console.log(`Warning: LLM gagal, fallback algoritma dipakai. Detail: ${llm.error}`);
-            analysis = buildFallbackAnalysis(analysisContext);
-            explanation = buildExplanationFromAnalysis(analysis);
+                llm = aiResult;
+                analysis = normalizeAnalysis(rawAnalysis, analysis);
+                explanation = buildExplanationFromAnalysis(analysis);
+                console.log(`OK: LLM ${aiResult.provider}/${aiResult.model} berhasil generate.`);
+            } catch (aiError) {
+                llm.error = getAxiosErrorMessage(aiError);
+                console.log(`Warning: LLM gagal, fallback algoritma dipakai. Detail: ${llm.error}`);
+                analysis = buildFallbackAnalysis(analysisContext);
+                explanation = buildExplanationFromAnalysis(analysis);
+            }
         }
 
-        res.json({
+        const responsePayload = {
+            id: coin.id,
             name: coin.name,
             symbol: coin.symbol.toUpperCase(),
             image: coin.image,
@@ -603,13 +913,23 @@ app.post('/api/analyze', async (req, res) => {
             change24h,
             rank,
             liquidity,
+            ath: coin.ath,
+            athChangePercentage: coin.ath_change_percentage,
             riskScore,
             riskLevel,
             sentiment,
+            riskFactors,
             analysis,
             explanation,
-            llm
-        });
+            llm,
+            cache: {
+                hit: false,
+                ttlSeconds: Math.ceil(ANALYZE_CACHE_TTL_MS / 1000)
+            }
+        };
+
+        setCachedAnalyzeResult(cacheKey, responsePayload);
+        res.json(responsePayload);
     } catch (error) {
         console.error('Server Error:', getAxiosErrorMessage(error));
         res.status(500).json({ error: 'Data pasar sedang tidak tersedia.' });
